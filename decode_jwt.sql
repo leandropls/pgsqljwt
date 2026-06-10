@@ -405,6 +405,15 @@ begin
         return false;
     end if;
 
+    -- RFC 7519 defines the JWT Claims Set as a JSON object. A validly-signed
+    -- token whose payload decodes to a scalar or array carries no registered
+    -- claims to check, so the exp/nbf/aud/iss guards below would vacuously pass
+    -- and the bogus value would be returned to the caller. Reject any non-object
+    -- payload outright so the function fails closed.
+    if jsonb_typeof(claims) <> 'object' then
+        return false;
+    end if;
+
     -- exp: reject once the current time passes the expiration (plus leeway).
     -- A non-numeric claim, or a numeric value so large that it overflows the
     -- timestamp range, is treated as an invalid token rather than allowed to
