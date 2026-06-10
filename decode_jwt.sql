@@ -406,33 +406,50 @@ begin
     end if;
 
     -- exp: reject once the current time passes the expiration (plus leeway).
+    -- A non-numeric claim, or a numeric value so large that it overflows the
+    -- timestamp range, is treated as an invalid token rather than allowed to
+    -- raise: the conversion is guarded so the function fails closed.
     if validate_exp and claims ? 'exp' then
         if jsonb_typeof(claims -> 'exp') <> 'number' then
             return false;
         end if;
-        if validation_time > to_timestamp((claims ->> 'exp')::numeric) + leeway then
-            return false;
-        end if;
+        begin
+            if validation_time > to_timestamp((claims ->> 'exp')::numeric) + leeway then
+                return false;
+            end if;
+        exception
+            when others then
+                return false;
+        end;
     end if;
 
     -- nbf: reject while the current time is before the not-before (minus leeway).
+    -- Guarded the same way as `exp` above so an out-of-range value fails closed.
     if validate_nbf and claims ? 'nbf' then
         if jsonb_typeof(claims -> 'nbf') <> 'number' then
             return false;
         end if;
-        if validation_time < to_timestamp((claims ->> 'nbf')::numeric) - leeway then
-            return false;
-        end if;
+        begin
+            if validation_time < to_timestamp((claims ->> 'nbf')::numeric) - leeway then
+                return false;
+            end if;
+        exception
+            when others then
+                return false;
+        end;
     end if;
 
     -- aud: when an expected audience is supplied, the token's `aud` claim
-    -- (a string or an array of strings) must contain it.
+    -- (a string or an array of strings, per RFC 7519) must contain it. Any
+    -- other shape -- absent, JSON null, a number, an object, or an array that
+    -- does not hold the expected string -- is rejected. The `?` operator only
+    -- matches string array elements, so numeric members never satisfy it.
     if audience is not null then
         if jsonb_typeof(claims -> 'aud') = 'array' then
             if not (claims -> 'aud' ? audience) then
                 return false;
             end if;
-        elsif claims ? 'aud' then
+        elsif jsonb_typeof(claims -> 'aud') = 'string' then
             if claims ->> 'aud' <> audience then
                 return false;
             end if;
