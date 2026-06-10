@@ -230,9 +230,12 @@ $$ language plpgsql
   *
   * @param {text} message - The message to be hashed and compared against the decrypted signature.
   * @param {text} hash_algorithm - The hash algorithm used for signing.
-  * @returns {bytea} - The signature that is expected after correctly padding the decrypted message.
+  * @param {int} keylength - The RSA modulus length in bytes (matches the signature length).
+  * @returns {bytea} - The signature that is expected after correctly padding the decrypted message, or null if the modulus is too small to hold the signature.
  */
-create or replace function jwt.build_rsa_expected_signature(message text, hash_algorithm text)
+drop function if exists jwt.build_rsa_expected_signature(text, text);
+
+create or replace function jwt.build_rsa_expected_signature(message text, hash_algorithm text, keylength integer)
     returns bytea as
 $$
 declare
@@ -247,21 +250,16 @@ declare
     hash_asn1_header       bytea;   -- The ASN.1 header for the hash algorithm used for signing.
 
     -- Variables to process each key for verification.
-    keylength              integer; -- The length of the RSA key in bytes.
-    cleartext              bytea;   -- Bytea representation of the decrypted signature.
-    max_cleartext_length          integer; -- Maximum allowable message length derived from the key length.
-    cleartext_length              integer; -- Actual length of the message being verified.
+    cleartext              bytea;   -- DigestInfo (ASN.1 header || hash) embedded in the block.
+    cleartext_length       integer; -- Actual length of the DigestInfo being verified.
 begin
     -- Select the appropriate ASN.1 header based on the algorithm.
     if hash_algorithm = 'sha256' then
         hash_asn1_header := sha_256_asn1;
-        keylength := 256;
     elsif hash_algorithm = 'sha384' then
         hash_asn1_header := sha_384_asn1;
-        keylength := 384;
     elsif hash_algorithm = 'sha512' then
         hash_asn1_header := sha_512_asn1;
-        keylength := 512;
     else
         raise exception 'Unsupported hash algorithm: %', hash_algorithm;
     end if;
@@ -273,18 +271,20 @@ begin
     cleartext := hash_asn1_header || digest(message, hash_algorithm);
     assert cleartext is not null;
 
-    -- Calculate the padding and expected signature to validate against the decrypted signature.
-    max_cleartext_length := keylength - 11; -- PKCS#1 padding for RSA involves at least 11 bytes of overhead.
-    assert max_cleartext_length is not null;
-
-    -- Get the length of the hashed content.
+    -- Get the length of the DigestInfo content.
     cleartext_length := octet_length(cleartext);
     assert cleartext_length is not null;
 
-    -- Calculate the padding length based on the key size and message length.
+    -- PKCS#1 v1.5 requires the modulus to hold the DigestInfo plus at least 11
+    -- bytes of overhead (the 0x00 0x01 prefix, a 0x00 separator and at least 8
+    -- padding bytes). Reject keys that are too small to carry this signature.
+    if keylength < cleartext_length + 11 then
+        return null;
+    end if;
+
+    -- Calculate the padding length based on the modulus size and DigestInfo length.
     padding_length := keylength - cleartext_length - 3;
-    assert padding_length is not null;
-    assert padding_length >= 0;
+    assert padding_length >= 8;
 
     -- Construct the expected_signature for comparison against the decrypted signature.
     expected_signature := '\x01'::bytea ||
@@ -366,7 +366,7 @@ declare
     -- Variables to process each key for verification.
     keyrecord              jsonb;       -- Temporary storage for an individual key record.
     alg                    text;        -- Holds the algorithm used for signing.
-    keylength              integer;     -- The length of the RSA key in bytes.
+    keylength              integer;     -- The expected signature length in bytes (RSA modulus size or HMAC output length).
 begin
     -- Check if the token or keys are null; if so, return null (indicating validation failure).
     if token is null or keys is null then
@@ -432,18 +432,15 @@ begin
         return null;
     end if;
 
-    -- Select the appropriate ASN.1 header based on the algorithm.
+    -- Map the JWT algorithm to its hash function and signature family.
     if alg = 'RS256' then
         hash_algorithm := 'sha256';
-        keylength := 256;
         signature_family := 'RS';
     elsif alg = 'RS384' then
         hash_algorithm := 'sha384';
-        keylength := 384;
         signature_family := 'RS';
     elsif alg = 'RS512' then
         hash_algorithm := 'sha512';
-        keylength := 512;
         signature_family := 'RS';
     elsif alg = 'HS256' then
         hash_algorithm := 'sha256';
@@ -462,21 +459,11 @@ begin
         return null;
     end if;
 
-    -- Check if the hash algorithm, signature family, and key length are not null.
+    -- Check if the hash algorithm and signature family are not null.
     assert hash_algorithm is not null;
     assert signature_family is not null;
-    assert keylength is not null;
-
-    -- Check if the crypto segment length matches the keylength
-    if signature_length <> keylength then
-        return null;
-    end if;
 
     if signature_family = 'RS' then
-        -- Calculate the expected signature for comparison against the decrypted signature.
-        expected_signature := build_rsa_expected_signature(message, hash_algorithm);
-        assert expected_signature is not null;
-
         -- Loop through each key provided and try to validate the JWT signature.
         for keyrecord in
             select jsonb_array_elements
@@ -488,6 +475,21 @@ begin
                     or jsonb_array_elements ->> 'kid' = header ->> 'kid'
                 )
         loop
+            -- RSA does not tie the algorithm to a fixed key size, so derive the
+            -- modulus length (in bytes) from each key. A valid RSA signature is
+            -- exactly as long as the modulus, so skip keys whose size does not
+            -- match the provided signature.
+            keylength := octet_length(numeric_to_bytea((keyrecord ->> 'n')::numeric));
+            if signature_length <> keylength then
+                continue;
+            end if;
+
+            -- Calculate the expected signature for this key's modulus size.
+            expected_signature := build_rsa_expected_signature(message, hash_algorithm, keylength);
+            if expected_signature is null then
+                continue;
+            end if;
+
             if rsa_signature_matches(
                 expected_signature := expected_signature,
                 signature := signature,
@@ -497,6 +499,12 @@ begin
             end if;
         end loop;
     elsif signature_family = 'HS' then
+        -- The HMAC signature length is fixed by the hash function.
+        assert keylength is not null;
+        if signature_length <> keylength then
+            return null;
+        end if;
+
         -- Loop through each key provided and try to validate the JWT signature.
         for keyrecord in
             select jsonb_array_elements
