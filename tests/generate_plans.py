@@ -198,19 +198,25 @@ def main() -> None:
     # `alg: none` token, RSA->HMAC algorithm confusion (an HS256 token forged
     # using the published RSA public key as the HMAC secret), verification
     # against the wrong key, signature stripping/tampering, structurally
-    # malformed tokens, and validly-signed but non-object payloads.
+    # malformed tokens, validly-signed but non-object payloads, a string-typed
+    # `exp`, and the acceptance of an empty (claimless) object payload.
 
     def b64u(data: bytes) -> str:
         """URL-safe base64 without padding, matching the JWT segment encoding."""
         return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
-    def hs256_raw(payload: bytes, secret: bytes) -> str:
+    def hs256_raw(payload: bytes, secret: bytes, kid: str) -> str:
         """Sign an arbitrary (possibly non-object) payload as an HS256 JWT.
 
         joserfc's encoder only accepts an object claims set, so the payload is
         assembled and HMAC-signed by hand to cover the malformed-payload cases.
+        The header carries `kid` so the key is actually selected during
+        verification -- otherwise a token whose header omits `kid` would be
+        rejected by key selection before the payload is ever inspected, and the
+        case would not exercise what it claims to.
         """
-        signing_input = f'{b64u(json.dumps({"alg": "HS256"}).encode())}.{b64u(payload)}'
+        header = b64u(json.dumps({"alg": "HS256", "kid": kid}).encode())
+        signing_input = f"{header}.{b64u(payload)}"
         signature = hmac.new(secret, signing_input.encode(), hashlib.sha256).digest()
         return f"{signing_input}.{b64u(signature)}"
 
@@ -269,8 +275,12 @@ def main() -> None:
     ).digest()
     confusion_token = f"{confusion_input}.{b64u(confusion_sig)}"
 
-    # Flip the final character of a valid signature to corrupt it.
-    tampered_sig = v_signature[:-1] + ("A" if v_signature[-1] != "A" else "B")
+    # Corrupt a valid signature by changing its first base64url character. The
+    # leading character always carries six significant bits, so altering it is
+    # guaranteed to change the decoded signature bytes -- unlike the trailing
+    # character, whose low bits are non-significant padding and can decode back
+    # to the original bytes.
+    tampered_sig = ("A" if v_signature[0] != "A" else "B") + v_signature[1:]
 
     securityTests = {
         "valid_control": {"token": valid_token, "jwk": sec_jwk},
@@ -285,8 +295,30 @@ def main() -> None:
         "two_segments": {"token": f"{v_header}.{v_payload}", "jwk": sec_jwk},
         "one_segment": {"token": "not-a-jwt", "jwk": sec_jwk},
         "garbage_segments": {"token": "@@@.###.$$$", "jwk": sec_jwk},
-        "payload_scalar": {"token": hs256_raw(b'"admin"', sec_secret), "jwk": sec_jwk},
-        "payload_array": {"token": hs256_raw(b"[1,2,3]", sec_secret), "jwk": sec_jwk},
+        "payload_scalar": {
+            "token": hs256_raw(b'"admin"', sec_secret, sec_kid),
+            "jwk": sec_jwk,
+        },
+        "payload_array": {
+            "token": hs256_raw(b"[1,2,3]", sec_secret, sec_kid),
+            "jwk": sec_jwk,
+        },
+        # exp carried as a JSON string rather than a number: the type guard in
+        # validate_claims must reject it (a string is not a valid numeric date).
+        "exp_string": {
+            "token": hs256_raw(
+                json.dumps({"aud": "postgresql", "exp": "9999999999"}).encode(),
+                sec_secret,
+                sec_kid,
+            ),
+            "jwk": sec_jwk,
+        },
+        # An empty object is a valid (if claimless) JWT Claims Set: with no
+        # registered claims to enforce it must be accepted and returned as-is.
+        "empty_object": {
+            "token": hs256_raw(b"{}", sec_secret, sec_kid),
+            "jwk": sec_jwk,
+        },
     }
 
     # A key whose RSA exponent exceeds the supported int range must be skipped
@@ -314,6 +346,20 @@ def main() -> None:
         "skips_oversized_exponent": {
             "token": big_exp_token,
             "bigexp_jwk": json.dumps(oversized_jwk),
+            "good_jwk": json.dumps(good_jwk),
+        }
+    }
+
+    # A malformed RSA JWK missing its modulus must be skipped gracefully rather
+    # than raising. bytea_to_numeric(null) would otherwise abort the call before
+    # the loop could reach a valid key, so pair the broken key with a valid one
+    # to prove the token still verifies (mirrors the oversized-exponent case).
+    malformed_jwk = dict(good_jwk)
+    del malformed_jwk["n"]
+    rsaMalformedTests = {
+        "skips_malformed_rsa_key": {
+            "token": big_exp_token,
+            "bad_jwk": json.dumps(malformed_jwk),
             "good_jwk": json.dumps(good_jwk),
         }
     }
@@ -351,6 +397,10 @@ def main() -> None:
     # Write the security-property test dictionary to its 'yaml' file
     with PLANS_PATH.joinpath("decode_jwt_security.yaml").open("wt") as f:
         yaml.safe_dump(data=securityTests, stream=f, width=BIGINT)
+
+    # Write the malformed-key test dictionary to its 'yaml' file
+    with PLANS_PATH.joinpath("decode_jwt_malformed_key.yaml").open("wt") as f:
+        yaml.safe_dump(data=rsaMalformedTests, stream=f, width=BIGINT)
 
 
 if __name__ == "__main__":
