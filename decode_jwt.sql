@@ -37,6 +37,14 @@ declare
     result     numeric := 0; -- Initialized to hold the numeric result as we process bytes.
     byte_value int; -- Temporarily holds the numeric value of an individual byte.
 begin
+    -- A null input has no numeric value. Without this guard the loop bound
+    -- length(null) is null and the FOR raises, which would turn a malformed key
+    -- (e.g. an RSA JWK missing its `n` or `e`) into an error instead of letting
+    -- the verifier skip it and fail closed.
+    if bytea_data is null then
+        return null;
+    end if;
+
     -- Loop through each byte in the bytea data.
     for i in 1..length(bytea_data) loop
         -- Extract the byte value at the current position.
