@@ -127,3 +127,9 @@ Temporary Items
 
 # RegreSQL
 */regresql/out
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
