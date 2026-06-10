@@ -108,6 +108,32 @@ def main() -> None:
             # If the algorithm is not supported, raise a ValueError
             raise ValueError(f"Unsupported alg: {alg}")
 
+    # The RS* algorithms only fix the digest, not the RSA key size, so generate
+    # additional vectors where the modulus size differs from the digest size
+    # (e.g. RS256 signed with a 4096-bit key). These guard against regressions
+    # that assume a fixed signature length per algorithm.
+    crossSizes = {"RS256": 4096, "RS384": 2048, "RS512": 2048}
+    for alg, keySizeBits in crossSizes.items():
+        kid = str(uuid4())
+        key = jwk.RSAKey.generate_key(
+            key_size=keySizeBits,
+            parameters={"alg": alg, "use": "sig", "kid": kid},
+        )
+        token = jwt.encode(
+            header={"alg": alg, "kid": kid},
+            claims={"aud": "postgresql"},
+            key=key,
+            algorithms=[alg],
+            registry=registry,
+        )
+        name = f"{alg.lower()}_{keySizeBits}"
+        rsaTests[name] = {"token": token, "jwk": json.dumps(key.as_dict(private=False))}
+        header, payload, signature = token.split(".")
+        rsaFailTests[name] = {
+            "token": f"{header}.{BAD_PAYLOAD}.{signature}",
+            "jwk": json.dumps(key.as_dict(private=False)),
+        }
+
     # Write the HMAC tests dictionary to 'decode_jwt_hmac.yaml' file
     with PLANS_PATH.joinpath("decode_jwt_hmac.yaml").open("wt") as f:
         yaml.safe_dump(data=hmacTests, stream=f, width=BIGINT)
