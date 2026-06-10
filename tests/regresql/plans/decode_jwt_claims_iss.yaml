@@ -1,0 +1,9 @@
+iss_absent:
+  jwk: '{"k": "xmxpKfr_njglSLF0zYB3YjgIYQ5COhXMfr-OgG6s-H8", "alg": "HS256", "use": "sig", "kid": "985c02cb-2cbb-4bc7-96bc-56a427dbf49d", "kty": "oct"}'
+  token: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6Ijk4NWMwMmNiLTJjYmItNGJjNy05NmJjLTU2YTQyN2RiZjQ5ZCJ9.eyJzdWIiOiJ1c2VyIn0.cOxSs-J8FKt5OFEtGB7v22QBQqGV5DEXDU0cb7H0eKE
+iss_match:
+  jwk: '{"k": "xmxpKfr_njglSLF0zYB3YjgIYQ5COhXMfr-OgG6s-H8", "alg": "HS256", "use": "sig", "kid": "985c02cb-2cbb-4bc7-96bc-56a427dbf49d", "kty": "oct"}'
+  token: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6Ijk4NWMwMmNiLTJjYmItNGJjNy05NmJjLTU2YTQyN2RiZjQ5ZCJ9.eyJpc3MiOiJodHRwczovL2V4YW1wbGUuY29tIn0.qtbnXC12UAI5Sc0xYTJr474s6eW6fOGqwtKxXwSSArM
+iss_mismatch:
+  jwk: '{"k": "xmxpKfr_njglSLF0zYB3YjgIYQ5COhXMfr-OgG6s-H8", "alg": "HS256", "use": "sig", "kid": "985c02cb-2cbb-4bc7-96bc-56a427dbf49d", "kty": "oct"}'
+  token: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6Ijk4NWMwMmNiLTJjYmItNGJjNy05NmJjLTU2YTQyN2RiZjQ5ZCJ9.eyJpc3MiOiJodHRwczovL2V2aWwuZXhhbXBsZS5jb20ifQ.eOn4KN1pcZMPXxx5kAO-XcE7kysiDbaPx_7vJnd8VSQ

@@ -338,14 +338,117 @@ $$ language plpgsql
    set search_path = jwt, public, pg_temp;
 
 /**
- * Decodes a JWT and verifies its signature against a set of keys.
+ * Validates the registered claims of an already signature-verified JWT.
+ *
+ * Time-based claims are only enforced when present: a token without an `exp`
+ * (or `nbf`) claim is not rejected by the corresponding check. The `aud` and
+ * `iss` claims are only checked when the caller supplies an expected value.
+ *
+ * @param {jsonb} claims - The decoded JWT claims.
+ * @param {text} audience - The expected audience; when non-null the token's `aud` (string or array) must contain it.
+ * @param {text} issuer - The expected issuer; when non-null the token's `iss` must equal it.
+ * @param {interval} leeway - Clock-skew tolerance applied to the `exp` and `nbf` checks.
+ * @param {bool} validate_exp - Whether to enforce the `exp` (expiration) claim when present.
+ * @param {bool} validate_nbf - Whether to enforce the `nbf` (not-before) claim when present.
+ * @param {timestamptz} validation_time - The reference time the claims are validated against.
+ * @returns {bool} - True when the claims are acceptable, false otherwise.
+ */
+create or replace function jwt.validate_claims(
+    claims jsonb,
+    audience text,
+    issuer text,
+    leeway interval,
+    validate_exp boolean,
+    validate_nbf boolean,
+    validation_time timestamptz
+)
+    returns boolean as
+$$
+begin
+    if claims is null then
+        return false;
+    end if;
+
+    -- exp: reject once the current time passes the expiration (plus leeway).
+    if validate_exp and claims ? 'exp' then
+        if jsonb_typeof(claims -> 'exp') <> 'number' then
+            return false;
+        end if;
+        if validation_time > to_timestamp((claims ->> 'exp')::numeric) + leeway then
+            return false;
+        end if;
+    end if;
+
+    -- nbf: reject while the current time is before the not-before (minus leeway).
+    if validate_nbf and claims ? 'nbf' then
+        if jsonb_typeof(claims -> 'nbf') <> 'number' then
+            return false;
+        end if;
+        if validation_time < to_timestamp((claims ->> 'nbf')::numeric) - leeway then
+            return false;
+        end if;
+    end if;
+
+    -- aud: when an expected audience is supplied, the token's `aud` claim
+    -- (a string or an array of strings) must contain it.
+    if audience is not null then
+        if jsonb_typeof(claims -> 'aud') = 'array' then
+            if not (claims -> 'aud' ? audience) then
+                return false;
+            end if;
+        elsif claims ? 'aud' then
+            if claims ->> 'aud' <> audience then
+                return false;
+            end if;
+        else
+            return false;
+        end if;
+    end if;
+
+    -- iss: when an expected issuer is supplied, the token's `iss` must match it.
+    if issuer is not null then
+        if claims ->> 'iss' is null or claims ->> 'iss' <> issuer then
+            return false;
+        end if;
+    end if;
+
+    return true;
+end;
+$$ language plpgsql
+   immutable
+   set search_path = jwt, public, pg_temp;
+
+/**
+ * Decodes a JWT, verifies its signature against a set of keys and validates its
+ * registered claims.
+ *
+ * By default the `exp` (expiration) and `nbf` (not-before) claims are enforced
+ * when present; pass `validate_exp`/`validate_nbf` as false to disable them.
+ * Audience and issuer are only checked when an expected value is supplied.
  *
  * @param {text} token - The JWT to be decoded and verified.
  * @param {jsonb} keys - The JSON array of keys provided in JSONB format, against which the JWT's signature will be verified.
- * @returns {jsonb} - The decoded JWT claims in JSONB format if the signature is valid, null otherwise.
+ * @param {text} audience - Optional expected audience; when supplied the token's `aud` claim must contain it.
+ * @param {text} issuer - Optional expected issuer; when supplied the token's `iss` claim must equal it.
+ * @param {interval} leeway - Clock-skew tolerance applied to the `exp` and `nbf` checks (default 0).
+ * @param {bool} validate_exp - Whether to enforce the `exp` claim when present (default true).
+ * @param {bool} validate_nbf - Whether to enforce the `nbf` claim when present (default true).
+ * @returns {jsonb} - The decoded JWT claims in JSONB format if the signature and claims are valid, null otherwise.
  */
 
-create or replace function jwt.decode_jwt(token text, keys jsonb)
+-- Drop the previous two-argument signature so the defaulted version below is the
+-- only candidate (keeping both would make two-argument calls ambiguous).
+drop function if exists jwt.decode_jwt(text, jsonb);
+
+create or replace function jwt.decode_jwt(
+    token text,
+    keys jsonb,
+    audience text default null,
+    issuer text default null,
+    leeway interval default '0 seconds',
+    validate_exp boolean default true,
+    validate_nbf boolean default true
+)
     returns jsonb as
 $$
 declare
@@ -367,6 +470,7 @@ declare
     keyrecord              jsonb;       -- Temporary storage for an individual key record.
     alg                    text;        -- Holds the algorithm used for signing.
     keylength              integer;     -- The expected signature length in bytes (RSA modulus size or HMAC output length).
+    validation_time        timestamptz := now(); -- Reference time for the exp/nbf claim checks.
 begin
     -- Check if the token or keys are null; if so, return null (indicating validation failure).
     if token is null or keys is null then
@@ -495,7 +599,13 @@ begin
                 signature := signature,
                 n := (keyrecord ->> 'n')::numeric,
                 e := (keyrecord ->> 'e')::integer) then
-                return claims;
+                -- The signature is authentic; the token is only accepted if its
+                -- registered claims also pass validation.
+                if validate_claims(claims, audience, issuer, leeway,
+                                   validate_exp, validate_nbf, validation_time) then
+                    return claims;
+                end if;
+                return null;
             end if;
         end loop;
     elsif signature_family = 'HS' then
@@ -522,7 +632,13 @@ begin
                 hash_algorithm -- type
             );
             if expected_signature = signature then
-                return claims;
+                -- The signature is authentic; the token is only accepted if its
+                -- registered claims also pass validation.
+                if validate_claims(claims, audience, issuer, leeway,
+                                   validate_exp, validate_nbf, validation_time) then
+                    return claims;
+                end if;
+                return null;
             end if;
         end loop;
     else
@@ -534,5 +650,5 @@ begin
     return null;
 end;
 $$ language plpgsql
-   immutable
+   stable
    set search_path = jwt, public, pg_temp;
