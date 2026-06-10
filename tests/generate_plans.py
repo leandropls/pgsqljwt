@@ -158,19 +158,30 @@ def main() -> None:
         )
         return {"token": token, "jwk": json.dumps(claims_key.as_dict())}
 
+    # 1e308 is finite JSON but overflows PostgreSQL's timestamp range; the
+    # exp/nbf checks must reject it rather than letting to_timestamp raise.
+    overflow_epoch = 1e308
+
     # Exercised through decode_jwt with default validation (exp/nbf enforced).
     claimsTests = {
         "exp_valid": claims_vector({"aud": "postgresql", "exp": far_future}),
         "exp_expired": claims_vector({"aud": "postgresql", "exp": far_past}),
         "nbf_valid": claims_vector({"aud": "postgresql", "nbf": far_past}),
         "nbf_future": claims_vector({"aud": "postgresql", "nbf": far_future}),
+        "exp_overflow": claims_vector({"aud": "postgresql", "exp": overflow_epoch}),
+        "nbf_overflow": claims_vector({"aud": "postgresql", "nbf": overflow_epoch}),
     }
-    # Exercised through decode_jwt with audience := 'postgresql'.
+    # Exercised through decode_jwt with audience := 'postgresql'. The trailing
+    # cases pin down the audience check against malformed `aud` claims: a JSON
+    # null and a number must both be rejected (a number that stringifies to the
+    # expected audience must not be accepted through `->>`).
     claimsAudTests = {
         "aud_match": claims_vector({"aud": "postgresql"}),
         "aud_match_array": claims_vector({"aud": ["other", "postgresql"]}),
         "aud_mismatch": claims_vector({"aud": "other"}),
         "aud_absent": claims_vector({"sub": "user"}),
+        "aud_null": claims_vector({"aud": None}),
+        "aud_number": claims_vector({"aud": 123}),
     }
     # Exercised through decode_jwt with issuer := 'https://example.com'.
     claimsIssTests = {

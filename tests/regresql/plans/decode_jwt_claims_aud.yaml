@@ -10,3 +10,9 @@ aud_match_array:
 aud_mismatch:
   jwk: '{"k": "xmxpKfr_njglSLF0zYB3YjgIYQ5COhXMfr-OgG6s-H8", "alg": "HS256", "use": "sig", "kid": "985c02cb-2cbb-4bc7-96bc-56a427dbf49d", "kty": "oct"}'
   token: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6Ijk4NWMwMmNiLTJjYmItNGJjNy05NmJjLTU2YTQyN2RiZjQ5ZCJ9.eyJhdWQiOiJvdGhlciJ9.bCK54LM5PTvAx-7_kzu9ZJ-7xo-OBRx9kCnVappwZNU
+aud_null:
+  jwk: '{"k": "xmxpKfr_njglSLF0zYB3YjgIYQ5COhXMfr-OgG6s-H8", "alg": "HS256", "use": "sig", "kid": "985c02cb-2cbb-4bc7-96bc-56a427dbf49d", "kty": "oct"}'
+  token: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6Ijk4NWMwMmNiLTJjYmItNGJjNy05NmJjLTU2YTQyN2RiZjQ5ZCJ9.eyJhdWQiOm51bGx9.Dt11sNTyGcIV25zunJ5EduJKBiURTizYA7euEih0eUA
+aud_number:
+  jwk: '{"k": "xmxpKfr_njglSLF0zYB3YjgIYQ5COhXMfr-OgG6s-H8", "alg": "HS256", "use": "sig", "kid": "985c02cb-2cbb-4bc7-96bc-56a427dbf49d", "kty": "oct"}'
+  token: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6Ijk4NWMwMmNiLTJjYmItNGJjNy05NmJjLTU2YTQyN2RiZjQ5ZCJ9.eyJhdWQiOjEyM30._dIrPP4glKGuxXRCjhV8pdoou7MDfSpz5X7jeYUUo-M
