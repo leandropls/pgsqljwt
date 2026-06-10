@@ -21,6 +21,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 #
+import base64
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -178,6 +179,35 @@ def main() -> None:
         "iss_absent": claims_vector({"sub": "user"}),
     }
 
+    # A key whose RSA exponent exceeds the supported int range must be skipped
+    # gracefully rather than raising. Pairing such a key with a valid one in the
+    # same set proves the oversized key does not poison verification.
+    big_exp_kid = str(uuid4())
+    big_exp_key = jwk.RSAKey.generate_key(
+        key_size=2048,
+        parameters={"alg": "RS256", "use": "sig", "kid": big_exp_kid},
+    )
+    big_exp_token = jwt.encode(
+        header={"alg": "RS256", "kid": big_exp_kid},
+        claims={"aud": "postgresql"},
+        key=big_exp_key,
+        algorithms=["RS256"],
+        registry=registry,
+    )
+    good_jwk = big_exp_key.as_dict(private=False)
+    oversized_jwk = dict(good_jwk)
+    # 2 ** 40 + 1 does not fit in a signed 32-bit integer.
+    oversized_jwk["e"] = (
+        base64.urlsafe_b64encode((2**40 + 1).to_bytes(6, "big")).rstrip(b"=").decode()
+    )
+    rsaBigExpTests = {
+        "skips_oversized_exponent": {
+            "token": big_exp_token,
+            "bigexp_jwk": json.dumps(oversized_jwk),
+            "good_jwk": json.dumps(good_jwk),
+        }
+    }
+
     # Write the HMAC tests dictionary to 'decode_jwt_hmac.yaml' file
     with PLANS_PATH.joinpath("decode_jwt_hmac.yaml").open("wt") as f:
         yaml.safe_dump(data=hmacTests, stream=f, width=BIGINT)
@@ -203,6 +233,10 @@ def main() -> None:
 
     with PLANS_PATH.joinpath("decode_jwt_claims_iss.yaml").open("wt") as f:
         yaml.safe_dump(data=claimsIssTests, stream=f, width=BIGINT)
+
+    # Write the oversized-exponent test dictionary to its 'yaml' file
+    with PLANS_PATH.joinpath("decode_jwt_rsa_bigexp.yaml").open("wt") as f:
+        yaml.safe_dump(data=rsaBigExpTests, stream=f, width=BIGINT)
 
 
 if __name__ == "__main__":

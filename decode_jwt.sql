@@ -615,6 +615,13 @@ begin
                     or jsonb_array_elements ->> 'kid' = header ->> 'kid'
                 )
         loop
+            -- The RSA exponent is constrained to int by mod_exp/decrypt_rsa, so
+            -- skip keys whose exponent falls outside that range instead of
+            -- letting the cast below raise (returning null rather than erroring).
+            if (keyrecord ->> 'e')::numeric > 2147483647 then
+                continue;
+            end if;
+
             -- RSA does not tie the algorithm to a fixed key size, so derive the
             -- modulus length (in bytes) from each key. A valid RSA signature is
             -- exactly as long as the modulus, so skip keys whose size does not
