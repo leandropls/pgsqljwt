@@ -338,6 +338,42 @@ $$ language plpgsql
    set search_path = jwt, public, pg_temp;
 
 /**
+ * Compares two bytea values without leaking, through timing, where they first
+ * differ.
+ *
+ * PostgreSQL's `=` operator on bytea returns as soon as it finds a differing
+ * byte, so the time it takes reveals the length of the matching prefix. For an
+ * HMAC tag (a secret derived from the key) that turns the comparison into an
+ * oracle an attacker could use to forge a signature one byte at a time.
+ *
+ * Rather than rely on a hand-written byte loop being constant-time in an
+ * interpreted language, this uses the double-HMAC technique: both operands are
+ * hashed with a fresh random key, so the subsequent equality test runs over
+ * values the attacker cannot predict and its timing reveals nothing about the
+ * inputs. The result is still exact because equal inputs hash equally under the
+ * same key.
+ *
+ * @param {bytea} a - The first value to compare.
+ * @param {bytea} b - The second value to compare.
+ * @returns {bool} - True when the two values are equal, false otherwise.
+ */
+create or replace function jwt.secure_compare(a bytea, b bytea)
+    returns boolean as
+$$
+declare
+    blinding_key bytea := gen_random_bytes(32);
+begin
+    if a is null or b is null then
+        return false;
+    end if;
+
+    return hmac(a, blinding_key, 'sha256') = hmac(b, blinding_key, 'sha256');
+end;
+$$ language plpgsql
+   volatile
+   set search_path = jwt, public, pg_temp;
+
+/**
  * Validates the registered claims of an already signature-verified JWT.
  *
  * Time-based claims are only enforced when present: a token without an `exp`
@@ -631,7 +667,9 @@ begin
                 urlsafe_b64decode((keyrecord ->> 'k')::text), -- key
                 hash_algorithm -- type
             );
-            if expected_signature = signature then
+            -- Compare the computed HMAC against the token's signature without
+            -- leaking, through timing, how many leading bytes matched.
+            if secure_compare(expected_signature, signature) then
                 -- The signature is authentic; the token is only accepted if its
                 -- registered claims also pass validation.
                 if validate_claims(claims, audience, issuer, leeway,
