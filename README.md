@@ -32,19 +32,34 @@ To install the RSA JWT decoding functions in your PostgreSQL database, follow th
 
 To use the RSA JWT decoding functions, provide the JWT token and a JSON array of keys. The function `decode_jwt` returns the decoded JWT claims if the signature is valid, and null otherwise.
 
-Here's an example of how to use the function:
+The example below is fully self-contained — copy and paste it as-is and it will
+return the token's claims. The RSA key and the token it signed are a real,
+matching pair (the token carries a single `aud` claim of `postgresql`):
 
 ```sql
 SELECT jwt.decode_jwt(
-    token := 'eyJraWQiOiJMYXNy...fbD5mt2VUgEIQ09LK2X5WvexGNXgwTHS2OEoADYEqlsXYW4nCKrfTnWytRqqN3QGogp2w',
+    token := 'eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6Ijc1ODg2ODllLTYzY2UtNGFiYi05OTA2LTg3OTdlMDljODkyOCJ9.eyJhdWQiOiJwb3N0Z3Jlc3FsIn0.ddCxuCbIOGwU760UJPWEKbJiCSvs8gONDdut78C5nMR43_OlbtGxL9ZOiOABjleMF9eQMPciRy0ykVOTkhLu4XohQ9f4Ja0tQxABcb6X19V0Ozw1joToR7H4AuGzEowuZsTOBU2LCauiZkSLIZX8cbY5jy0ITGleZuP2CdpZUDATR7pQaQ0dTma6GyPAOWNcBtP3dVgpMDnjvqYnSz_Phtq9HJWIT-OWq2j_Qm9UMO1EmrHIzjmoI4_2fMhLHxt9000THvp3gwgQY67luectLdQDcum6tk-kOtJyEWsaJkYlrgRcNiupZJ2i8IjIFOqGiU3dRF9rK32EQ2SUBUjEMw',
     keys := jsonb_build_array(
-        jwt.jwk_to_key('{"alg":"RS256","e":"AQAB","kid":"h5pxMYKBE+xzuBRuWsPl7Z6FEkJNDRQcxPkY+wJbXow=","kty":"RSA","n":"1MAoK9L...OKx5Q","use":"sig"}'::jsonb),
-        jwt.jwk_to_key('{"alg":"RS256","e":"AQAB","kid":"LasrDwHasdaqE41aLs8MLZQ5BYQwKgPcs7N1GGt5Ysg=","kty":"RSA","n":"xCEddOF0-SFSM1yU...N3QGogp2w","use":"sig"}'::jsonb)
+        jwt.jwk_to_key('{"alg":"RS256","e":"AQAB","kid":"7588689e-63ce-4abb-9906-8797e09c8928","kty":"RSA","n":"qgfVLnNNaLLoro-7f4y83PN-W78CnF5qHj0tH72tQGk8NDvDlB5uil8f2JZXrT6wp6r3rKXF5Cm_RGOHm0CMM8607IWL5VBkecP7MiOGacTg44NMXe0Dcf2kLcuvJLpX7VerE6SPBWYe4pTOoGPRugb-1dF52Kc9e9Qni9iIgSprTOK23_JEokX573LYTiANGbsMAAyvIRCMGAShp15AeqWn1-7_EIB37b6PJAkbMPN5PHWa_wF8dPSJEOYSPoOPQoxN306-ZXnNx6JF87SyQQmEeoMjhzlASUP1KuMtlQuNHfQkW08MlJvyFdyweAkCeXdL8hAaTW4FiW_klJN0NQ","use":"sig"}'::jsonb)
     )
 );
 ```
 
-Replace the `token` and keys with the appropriate JWT and key set for your application.
+Running it returns the decoded claims:
+
+```
+        decode_jwt
+-----------------------
+ {"aud": "postgresql"}
+(1 row)
+```
+
+To verify your own tokens, replace `token` with your JWT and the JWK(s) in
+`keys` with your signing key set. You may pass more than one key — `decode_jwt`
+selects the one whose `kid` matches the token header. Always supply each key's
+**full** base64url `n` (modulus) and a complete token; abbreviating either with
+an ellipsis makes the value invalid base64url and decoding fails with
+`invalid symbol "." found while decoding base64 sequence`.
 
 ### Claims validation
 
