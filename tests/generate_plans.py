@@ -22,6 +22,8 @@
 # SOFTWARE.
 #
 import base64
+import hashlib
+import hmac
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -190,6 +192,103 @@ def main() -> None:
         "iss_absent": claims_vector({"sub": "user"}),
     }
 
+    # Security-property vectors. Each case is fed to decode_jwt with a single
+    # key and, apart from the positive control, must be rejected (return null).
+    # These pin down the resistance to the well-known JWT attacks: the unsigned
+    # `alg: none` token, RSA->HMAC algorithm confusion (an HS256 token forged
+    # using the published RSA public key as the HMAC secret), verification
+    # against the wrong key, signature stripping/tampering, structurally
+    # malformed tokens, and validly-signed but non-object payloads.
+
+    def b64u(data: bytes) -> str:
+        """URL-safe base64 without padding, matching the JWT segment encoding."""
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    def hs256_raw(payload: bytes, secret: bytes) -> str:
+        """Sign an arbitrary (possibly non-object) payload as an HS256 JWT.
+
+        joserfc's encoder only accepts an object claims set, so the payload is
+        assembled and HMAC-signed by hand to cover the malformed-payload cases.
+        """
+        signing_input = f'{b64u(json.dumps({"alg": "HS256"}).encode())}.{b64u(payload)}'
+        signature = hmac.new(secret, signing_input.encode(), hashlib.sha256).digest()
+        return f"{signing_input}.{b64u(signature)}"
+
+    # The legitimate key the server trusts, plus a second, unrelated key used to
+    # prove a token does not verify against a key it was not signed with.
+    sec_kid = str(uuid4())
+    sec_key = jwk.OctKey.generate_key(
+        key_size=256,
+        parameters={"alg": "HS256", "use": "sig", "kid": sec_kid},
+    )
+    sec_jwk = json.dumps(sec_key.as_dict())
+    sec_secret = base64.urlsafe_b64decode(sec_key.as_dict()["k"] + "==")
+
+    other_kid = str(uuid4())
+    other_key = jwk.OctKey.generate_key(
+        key_size=256,
+        parameters={"alg": "HS256", "use": "sig", "kid": other_kid},
+    )
+    other_jwk = json.dumps(other_key.as_dict())
+
+    # An RSA key whose public part the server publishes. An attacker who only
+    # knows the public key tries to forge an HS256 token using the PEM-encoded
+    # public key as the HMAC secret; the key's own `alg` (RS256) must keep it
+    # from ever being used to verify an HS256 token.
+    sec_rsa_kid = str(uuid4())
+    sec_rsa_key = jwk.RSAKey.generate_key(
+        key_size=2048,
+        parameters={"alg": "RS256", "use": "sig", "kid": sec_rsa_kid},
+    )
+    sec_rsa_jwk = json.dumps(sec_rsa_key.as_dict(private=False))
+    rsa_pub_pem = sec_rsa_key.as_pem(private=False)
+
+    # A genuine HS256 token signed with the trusted key (positive control).
+    valid_token = jwt.encode(
+        header={"alg": "HS256", "kid": sec_kid},
+        claims={"aud": "postgresql"},
+        key=sec_key,
+        algorithms=["HS256"],
+        registry=registry,
+    )
+    v_header, v_payload, v_signature = valid_token.split(".")
+
+    # alg: none, carrying privileged-looking claims and an empty signature.
+    none_token = (
+        f'{b64u(json.dumps({"alg": "none", "kid": sec_kid}).encode())}.'
+        f'{b64u(json.dumps({"aud": "postgresql", "sub": "admin"}).encode())}.'
+    )
+
+    # HS256 token forged with the RSA public PEM as the HMAC secret.
+    confusion_input = (
+        f'{b64u(json.dumps({"alg": "HS256", "kid": sec_rsa_kid}).encode())}.'
+        f'{b64u(json.dumps({"aud": "postgresql", "sub": "admin"}).encode())}'
+    )
+    confusion_sig = hmac.new(
+        rsa_pub_pem, confusion_input.encode(), hashlib.sha256
+    ).digest()
+    confusion_token = f"{confusion_input}.{b64u(confusion_sig)}"
+
+    # Flip the final character of a valid signature to corrupt it.
+    tampered_sig = v_signature[:-1] + ("A" if v_signature[-1] != "A" else "B")
+
+    securityTests = {
+        "valid_control": {"token": valid_token, "jwk": sec_jwk},
+        "alg_none": {"token": none_token, "jwk": sec_rsa_jwk},
+        "alg_confusion_rsa_hmac": {"token": confusion_token, "jwk": sec_rsa_jwk},
+        "wrong_key": {"token": valid_token, "jwk": other_jwk},
+        "tampered_signature": {
+            "token": f"{v_header}.{v_payload}.{tampered_sig}",
+            "jwk": sec_jwk,
+        },
+        "stripped_signature": {"token": f"{v_header}.{v_payload}.", "jwk": sec_jwk},
+        "two_segments": {"token": f"{v_header}.{v_payload}", "jwk": sec_jwk},
+        "one_segment": {"token": "not-a-jwt", "jwk": sec_jwk},
+        "garbage_segments": {"token": "@@@.###.$$$", "jwk": sec_jwk},
+        "payload_scalar": {"token": hs256_raw(b'"admin"', sec_secret), "jwk": sec_jwk},
+        "payload_array": {"token": hs256_raw(b"[1,2,3]", sec_secret), "jwk": sec_jwk},
+    }
+
     # A key whose RSA exponent exceeds the supported int range must be skipped
     # gracefully rather than raising. Pairing such a key with a valid one in the
     # same set proves the oversized key does not poison verification.
@@ -248,6 +347,10 @@ def main() -> None:
     # Write the oversized-exponent test dictionary to its 'yaml' file
     with PLANS_PATH.joinpath("decode_jwt_rsa_bigexp.yaml").open("wt") as f:
         yaml.safe_dump(data=rsaBigExpTests, stream=f, width=BIGINT)
+
+    # Write the security-property test dictionary to its 'yaml' file
+    with PLANS_PATH.joinpath("decode_jwt_security.yaml").open("wt") as f:
+        yaml.safe_dump(data=securityTests, stream=f, width=BIGINT)
 
 
 if __name__ == "__main__":
