@@ -12,6 +12,7 @@ While PostgreSQL is a powerhouse of a database, it lacks the native ability to v
 
 - Validate RSA-signed and HMAC-signed JWTs within PostgreSQL.
 - Support RS256, RS384, RS512, HS256, HS384, and HS512 signing algorithms.
+- Validate the registered `exp`, `nbf`, `aud`, and `iss` claims.
 - Centralized access control logic within the database.
 - Usable with pgcrypto extension.
 
@@ -44,6 +45,53 @@ SELECT jwt.decode_jwt(
 ```
 
 Replace the `token` and keys with the appropriate JWT and key set for your application.
+
+### Claims validation
+
+After the signature is verified, `decode_jwt` validates the registered claims and
+returns `null` (just like a signature failure) when validation fails:
+
+- **`exp` / `nbf`** — enforced by default whenever the claim is present. A token
+  with no `exp` claim is **not** rejected, so issue your tokens with an
+  expiration. Pass `validate_exp := false` or `validate_nbf := false` to disable
+  the corresponding check, and `leeway` to allow for clock skew.
+- **`aud`** — only checked when you pass an expected `audience`. The token's
+  `aud` claim may be a string or an array of strings and must contain the
+  expected value.
+- **`iss`** — only checked when you pass an expected `issuer`, which must equal
+  the token's `iss` claim.
+
+```sql
+SELECT jwt.decode_jwt(
+    token := 'eyJraWQiOiJMYXNy...',
+    keys := jsonb_build_array(
+        jwt.jwk_to_key('{"alg":"RS256", ...}'::jsonb)
+    ),
+    audience := 'postgresql',
+    issuer := 'https://issuer.example.com',
+    leeway := interval '30 seconds'
+);
+```
+
+The full signature is:
+
+```sql
+jwt.decode_jwt(
+    token text,
+    keys jsonb,
+    audience text default null,
+    issuer text default null,
+    leeway interval default '0 seconds',
+    validate_exp boolean default true,
+    validate_nbf boolean default true
+)
+```
+
+> **Upgrading:** this version replaces the previous two-argument `decode_jwt`
+> with the signature above and enforces `exp`/`nbf` by default. Existing
+> `decode_jwt(token, keys)` calls keep working but will now reject expired or
+> not-yet-valid tokens. Drop any objects that depend on the old function before
+> re-running `decode_jwt.sql`.
 
 ## License
 

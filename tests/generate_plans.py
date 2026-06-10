@@ -134,6 +134,50 @@ def main() -> None:
             "jwk": json.dumps(key.as_dict(private=False)),
         }
 
+    # Claims-validation vectors. These exercise the exp/nbf/aud/iss checks that
+    # decode_jwt performs after verifying the signature. Fixed epoch values keep
+    # the vectors deterministic regardless of when the suite runs.
+    far_past = 1  # 1970-01-01, always in the past
+    far_future = 7258118400  # 2200-01-01, always in the future
+
+    claims_kid = str(uuid4())
+    claims_key = jwk.OctKey.generate_key(
+        key_size=256,
+        parameters={"alg": "HS256", "use": "sig", "kid": claims_kid},
+    )
+
+    def claims_vector(claims: dict) -> dict:
+        """Sign a token carrying the given claims with the shared HMAC key."""
+        token = jwt.encode(
+            header={"alg": "HS256", "kid": claims_kid},
+            claims=claims,
+            key=claims_key,
+            algorithms=["HS256"],
+            registry=registry,
+        )
+        return {"token": token, "jwk": json.dumps(claims_key.as_dict())}
+
+    # Exercised through decode_jwt with default validation (exp/nbf enforced).
+    claimsTests = {
+        "exp_valid": claims_vector({"aud": "postgresql", "exp": far_future}),
+        "exp_expired": claims_vector({"aud": "postgresql", "exp": far_past}),
+        "nbf_valid": claims_vector({"aud": "postgresql", "nbf": far_past}),
+        "nbf_future": claims_vector({"aud": "postgresql", "nbf": far_future}),
+    }
+    # Exercised through decode_jwt with audience := 'postgresql'.
+    claimsAudTests = {
+        "aud_match": claims_vector({"aud": "postgresql"}),
+        "aud_match_array": claims_vector({"aud": ["other", "postgresql"]}),
+        "aud_mismatch": claims_vector({"aud": "other"}),
+        "aud_absent": claims_vector({"sub": "user"}),
+    }
+    # Exercised through decode_jwt with issuer := 'https://example.com'.
+    claimsIssTests = {
+        "iss_match": claims_vector({"iss": "https://example.com"}),
+        "iss_mismatch": claims_vector({"iss": "https://evil.example.com"}),
+        "iss_absent": claims_vector({"sub": "user"}),
+    }
+
     # Write the HMAC tests dictionary to 'decode_jwt_hmac.yaml' file
     with PLANS_PATH.joinpath("decode_jwt_hmac.yaml").open("wt") as f:
         yaml.safe_dump(data=hmacTests, stream=f, width=BIGINT)
@@ -149,6 +193,16 @@ def main() -> None:
     # Write the RSA fail tests dictionary to 'decode_jwt_rsa_fail.yaml' file
     with PLANS_PATH.joinpath("decode_jwt_rsa_fail.yaml").open("wt") as f:
         yaml.safe_dump(data=rsaFailTests, stream=f, width=BIGINT)
+
+    # Write the claims-validation test dictionaries to their 'yaml' files
+    with PLANS_PATH.joinpath("decode_jwt_claims.yaml").open("wt") as f:
+        yaml.safe_dump(data=claimsTests, stream=f, width=BIGINT)
+
+    with PLANS_PATH.joinpath("decode_jwt_claims_aud.yaml").open("wt") as f:
+        yaml.safe_dump(data=claimsAudTests, stream=f, width=BIGINT)
+
+    with PLANS_PATH.joinpath("decode_jwt_claims_iss.yaml").open("wt") as f:
+        yaml.safe_dump(data=claimsIssTests, stream=f, width=BIGINT)
 
 
 if __name__ == "__main__":
